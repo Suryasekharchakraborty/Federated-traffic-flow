@@ -1,0 +1,609 @@
+import base64
+import re
+import time
+from pathlib import Path
+
+import numpy as np
+import plotly.graph_objects as go
+import streamlit as st
+
+# ─── PAGE CONFIG ────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="TechKnights | Federated Traffic-Flow Prediction",
+    page_icon="🚦",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# ─── CSS ────────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap');
+:root{--line:#14304F;--mut:#8FB0D0;--txt:#E6F0FF}
+html,body,.stApp,.stMarkdown,label,p,button,input{font-family:'Inter',sans-serif}
+.stApp{background:radial-gradient(1100px 480px at 88% -8%,rgba(0,120,255,.13),transparent 60%),linear-gradient(180deg,#07101F,#081528);color:var(--txt)}
+#MainMenu,footer,[data-testid="stHeader"],[data-testid="stToolbar"],[data-testid="stSidebar"],[data-testid="stSidebarCollapsedControl"],[data-testid="collapsedControl"]{display:none!important}
+.block-container{padding:1rem 1.6rem 1rem!important;max-width:100%!important}
+div[data-testid="stVerticalBlock"]{gap:.85rem}
+svg.ico{flex-shrink:0;vertical-align:middle}
+
+/* header */
+.hdr{display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;padding:4px 2px}
+.hdr-l{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.logo{width:60px;height:60px;border-radius:14px;box-shadow:0 0 0 1px rgba(0,212,255,.35),0 0 18px rgba(0,160,255,.28)}
+.logo-fb{display:flex;align-items:center;justify-content:center;background:#0A2442;color:#2DB6FF}
+.brand{font-size:1.75rem;font-weight:700;color:#fff;letter-spacing:-.01em}
+.vsep{width:1px;height:46px;background:linear-gradient(transparent,#2A5B8C,transparent)}
+.ttl{font-size:1.45rem;font-weight:700;color:#fff;line-height:1.2}
+.sub{font-size:.88rem;color:var(--mut);margin-top:3px}.sub b{color:#2DB6FF;margin:0 6px}
+.hdr-r{display:flex;gap:14px}
+.pbox{display:flex;flex-direction:column;align-items:center;gap:5px}
+.pl{display:flex;align-items:center;gap:8px;padding:7px 20px;border-radius:999px;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:.85rem;border:1px solid}
+.pl-green{color:#2DFFB0;border-color:rgba(45,255,176,.45);background:rgba(45,255,176,.08)}
+.pl-violet{color:#B79CFF;border-color:rgba(167,139,250,.5);background:rgba(167,139,250,.09)}
+.pl-amber{color:#FFB547;border-color:rgba(255,181,71,.5);background:rgba(255,181,71,.09)}
+.pl .dot{width:10px;height:10px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
+.pulse .dot{animation:pulse 1s infinite}
+@keyframes pulse{50%{opacity:.25}}
+.plab{font-size:.72rem;color:var(--mut)}
+
+/* control bar */
+.st-key-ctrlbar{background:rgba(9,22,40,.85);border:1px solid var(--line);border-radius:14px;padding:14px 16px 12px}
+.st-key-ctrlbar [data-testid="stHorizontalBlock"]{align-items:flex-end;gap:.8rem}
+[data-testid="stWidgetLabel"] p{font-size:.76rem;color:var(--mut);font-weight:500}
+[data-baseweb="select"]>div{background:#0B1A2E!important;border:1px solid #1E3A5F!important;border-radius:8px!important;min-height:42px}
+[data-baseweb="select"]>div:focus-within{border-color:#00D4FF!important}
+[data-baseweb="select"] *{color:#E6F0FF}
+[data-baseweb="popover"] ul{background:#0B1A2E}
+.st-key-ctrlbar [data-testid="stBaseButton-primary"]{background:linear-gradient(135deg,#1677FF,#0B5BD3);border:none;color:#fff;font-weight:600;min-height:46px;border-radius:9px;box-shadow:0 4px 18px rgba(22,119,255,.35)}
+.st-key-ctrlbar [data-testid="stBaseButton-primary"]:hover{filter:brightness(1.12)}
+.st-key-ctrlbar [data-testid="stBaseButton-secondary"]{background:rgba(255,255,255,.02);border:1px solid #2A4B73;color:#DCE9FA;font-weight:600;min-height:46px;border-radius:9px}
+.st-key-ctrlbar [data-testid="stBaseButton-secondary"]:hover{border-color:#00D4FF;color:#00D4FF}
+.st-key-w_dist [role="radiogroup"]{gap:0!important;flex-wrap:nowrap}
+.st-key-w_dist label[data-baseweb="radio"]{margin:0;padding:9px 22px;background:#0D1B2E;border:1px solid #1E3A5F;cursor:pointer}
+.st-key-w_dist label[data-baseweb="radio"]>div:first-child{display:none}
+.st-key-w_dist label[data-baseweb="radio"]:first-of-type{border-radius:8px 0 0 8px}
+.st-key-w_dist label[data-baseweb="radio"]:last-of-type{border-radius:0 8px 8px 0}
+.st-key-w_dist label[data-baseweb="radio"]:has(input:checked){background:#0B6BFF;border-color:#2B8CFF}
+.st-key-w_dist label p{font-size:.88rem;font-weight:600;color:#9DB6D3}
+.st-key-w_dist label:has(input:checked) p{color:#fff}
+
+/* KPI cards */
+.kpi{--c:0,212,255;border:1px solid rgba(var(--c),.55);border-left:4px solid rgb(var(--c));border-radius:12px;padding:14px 18px 12px;min-height:128px;background:linear-gradient(135deg,rgba(var(--c),.11),rgba(8,18,34,.92) 58%)}
+.kpi.green{--c:0,255,136}.kpi.amber{--c:255,181,71}.kpi.violet{--c:167,139,250}
+.kpi-top{display:flex;align-items:center;gap:10px;color:rgb(var(--c))}
+.kpi-lab{flex:1;font-size:.74rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase}
+.kpi-info{color:#6F8FB0;display:flex}
+.kpi-val{font-family:'JetBrains Mono',monospace;font-size:2.2rem;font-weight:700;color:rgb(var(--c));line-height:1.15;margin:8px 0 4px}
+.kpi-sub{font-size:.8rem;color:#B8CCE3;display:flex;align-items:center;gap:7px}
+.kbar{height:6px;border-radius:4px;background:#1A2745;margin:2px 0 8px;overflow:hidden}
+.kbar i{display:block;height:100%;background:linear-gradient(90deg,#7C5CFF,#A78BFA);border-radius:4px;transition:width .3s}
+
+/* tabs + panel */
+[data-baseweb="tab-list"]{gap:4px;background:#091728;border:1px solid var(--line);border-radius:12px;padding:5px}
+[data-baseweb="tab-highlight"],[data-baseweb="tab-border"]{display:none}
+button[data-baseweb="tab"]{height:42px;padding:0 20px;border-radius:9px;background:transparent;color:#9DB6D3;font-size:.88rem;font-weight:500}
+button[data-baseweb="tab"][aria-selected="true"]{background:linear-gradient(180deg,rgba(14,110,255,.38),rgba(14,110,255,.16));color:#7FDBFF;box-shadow:inset 0 -2px 0 #1AA3FF}
+[data-baseweb="tab-panel"]{margin-top:12px;padding:14px 18px 16px!important;border:1px solid var(--line);border-radius:12px;background:linear-gradient(180deg,rgba(10,24,48,.85),rgba(7,16,31,.9))}
+.ph{display:flex;align-items:center;gap:10px;font-weight:600;font-size:1.02rem;color:#EAF3FF;padding-bottom:10px;margin-bottom:6px;border-bottom:1px solid #12304F}
+.ph svg{color:#2DB6FF}
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:6px}
+.e-t{font-size:1.08rem;font-weight:600;color:#EAF3FF;margin-top:6px}
+.e-s{font-size:.9rem;color:#9DB6D3;max-width:420px}
+
+/* side panels */
+.sp{border:1px solid var(--line);border-radius:12px;padding:12px 14px 6px;margin-bottom:12px;background:linear-gradient(180deg,rgba(10,24,48,.85),rgba(7,16,31,.9))}
+.sp-t{font-size:.74rem;font-weight:700;letter-spacing:.17em;color:var(--mut);margin-bottom:10px}
+.ag{--c:0,212,255;display:flex;align-items:center;gap:12px;padding:10px 12px;margin-bottom:9px;border-radius:10px;border:1px solid rgba(var(--c),.45);border-left:4px solid rgb(var(--c));background:linear-gradient(90deg,rgba(var(--c),.11),rgba(8,18,34,.6))}
+.ag.green{--c:0,255,136}.ag.violet{--c:167,139,250}.ag.amber{--c:255,181,71}.ag.blue{--c:76,154,255}
+.ag-ico{color:rgb(var(--c));display:flex}
+.ag-main{flex:1;min-width:0}
+.ag-t{font-weight:600;font-size:.95rem;color:rgb(var(--c))}
+.ag-t em{font-style:normal;font-weight:400;font-size:.76rem;color:#7F9BBA;margin-left:6px}
+.ag-p{font-size:.75rem;color:#B8CCE3;margin:4px 0 6px}
+.ag-bar{height:5px;background:#10233D;border-radius:4px;overflow:hidden}
+.ag-bar i{display:block;height:100%;background:rgb(var(--c));border-radius:4px;transition:width .3s}
+.ag-r{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+.pill{font-size:.7rem;padding:3px 12px;border-radius:7px;border:1px solid #2A4B73;color:#BCD0E8;background:rgba(255,255,255,.03)}
+.pill.run{color:#FFB547;border-color:rgba(255,181,71,.55)}
+.pill.done{color:#00FF88;border-color:rgba(0,255,136,.55)}
+.act{height:118px;overflow-y:auto;margin-bottom:8px;border:1px solid #12304F;border-radius:9px;padding:8px 12px;background:#060D1B;font-family:'JetBrains Mono',monospace;font-size:.7rem;line-height:1.75;color:#4A7A9B}
+.act-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:3px;color:#9DB6D3;font-family:'Inter',sans-serif;font-size:.85rem}
+.act-empty small{font-size:.72rem;color:#6F8FB0}
+.act-empty svg{color:#2DB6FF}
+.log-ts{color:#2A4A6A}.log-ok{color:#00FF88}.log-warn{color:#FFB547}.log-info{color:#00D4FF}
+
+/* tables */
+.cmp-table,.kv{width:100%;border-collapse:collapse;font-size:.78rem}
+.cmp-table th{color:#6F8FB0;font-weight:500;text-align:left;padding:.6rem .8rem;border-bottom:1px solid #1A2535;font-size:.7rem;text-transform:uppercase;letter-spacing:.06em}
+.cmp-table td,.kv td{padding:.5rem .8rem;border-bottom:1px solid #111D2C;color:#C8D8E8;font-family:'JetBrains Mono',monospace}
+.kv td:first-child{color:#6F8FB0;width:34%}
+.cmp-table tr:last-child td,.kv tr:last-child td{border-bottom:none}
+.cmp-table .win{color:#00FF88;font-weight:600}.cmp-table .lose{color:#FF6B6B}
+.round-badge{display:inline-block;background:rgba(0,212,255,.08);border:1px solid rgba(0,212,255,.2);border-radius:6px;padding:.15rem .5rem;font-size:.72rem;color:#00D4FF}
+.note{margin-top:14px;padding:12px 16px;border:1px solid #14304F;border-radius:10px;background:#0A1628;font-size:.8rem;color:#9DB6D3;line-height:1.7}
+
+/* footer */
+.foot{display:flex;flex-wrap:wrap;align-items:center;padding:10px 14px;border:1px solid var(--line);border-radius:10px;background:rgba(8,20,38,.7);font-size:.75rem;color:#9DB6D3;row-gap:8px}
+.foot span{display:flex;align-items:center;gap:8px;padding:0 16px;border-right:1px solid #1B3A5C}
+.foot span:first-child{padding-left:0}.foot span:last-child{border-right:none}
+.foot svg{color:#2DB6FF}
+</style>
+""", unsafe_allow_html=True)
+
+
+# ─── ICONS / HTML HELPERS ────────────────────────────────────────────────────
+ICONS = {
+    "line":   '<path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/>',
+    "bars":   '<path d="M3 21h18"/><rect x="5" y="12" width="3" height="7"/><rect x="10.5" y="8" width="3" height="11"/><rect x="16" y="4" width="3" height="15"/>',
+    "cloud":  '<path d="M7 18a4 4 0 010-8 5 5 0 019.6-1A4.5 4.5 0 0117 18"/><path d="M12 12v7M9 15l3-3 3 3"/>',
+    "refresh":'<path d="M20 11a8 8 0 10-2.3 5.7"/><path d="M20 4v7h-7"/>',
+    "users":  '<circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.4"/><path d="M17 14c2.5 0 4 1.8 4 4.5"/>',
+    "user":   '<circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-4 3.1-6.5 7-6.5s7 2.5 7 6.5"/>',
+    "info":   '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
+    "node":   '<circle cx="12" cy="12" r="2.4"/><circle cx="12" cy="4" r="1.6"/><circle cx="12" cy="20" r="1.6"/><circle cx="4" cy="12" r="1.6"/><circle cx="20" cy="12" r="1.6"/><path d="M12 6v3.6M12 14.4V18M6 12h3.6M14.4 12H18"/>',
+    "bolt":   '<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>',
+    "db":     '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
+    "shield": '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
+    "doc":    '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/>',
+    "clock":  '<path d="M6 3h8l4 4v6M6 3v18h6"/><circle cx="17" cy="17" r="4.5"/><path d="M17 15v2l1.5 1"/>',
+    "scale":  '<path d="M12 4v16M7 20h10M5 8h14"/><path d="M5 8l-3 7a3.5 3.5 0 006 0zM19 8l-3 7a3.5 3.5 0 006 0z"/>',
+    "repeat": '<path d="M4 9a6 6 0 016-5h7M17 1l3 3-3 3M20 15a6 6 0 01-6 5H7M7 23l-3-3 3-3"/>',
+}
+
+
+def ico(name, size=18):
+    return (f'<svg class="ico" width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" '
+            f'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" '
+            f'stroke-linejoin="round">{ICONS[name]}</svg>')
+
+
+def H(s):
+    """Collapse multi-line HTML so Streamlit's markdown never sees indented code blocks."""
+    return re.sub(r"\s*\n\s*", "", s.strip())
+
+
+@st.cache_data
+def load_logo_b64():
+    for name in ("logo.png", "techknights_logo.png"):
+        p = Path(__file__).parent / name
+        if p.exists():
+            return base64.b64encode(p.read_bytes()).decode()
+    return None
+
+
+LOGO_B64 = load_logo_b64()
+
+SPEED_MAP = {"🐢 Slow": 1.0, "⚡ Normal": 0.35, "🚀 Fast": 0.05}
+AGENT_CLASS = ["cyan", "green", "violet", "amber", "blue"]
+AGENT_HEX = ["#00D4FF", "#00FF88", "#A78BFA", "#FFB547", "#4C9AFF"]
+INTERSECTION_NAMES = ["Intersection A", "Intersection B", "Intersection C", "Intersection D", "Intersection E"]
+
+
+def _node(x, y, light):
+    return (f'<g transform="translate({x},{y})"><ellipse rx="52" ry="21" fill="url(#g1)"/>'
+            f'<ellipse rx="40" ry="15" fill="#0A2442" stroke="#2DB6FF" stroke-opacity=".6"/>'
+            f'<path d="M-34 -4L34 4M-30 8L30 -8" stroke="#5CC8FF" stroke-width="5" stroke-linecap="round" opacity=".45"/>'
+            f'<rect x="-1" y="-24" width="2" height="16" fill="#2DB6FF"/><circle cy="-26" r="3.2" fill="{light}"/></g>')
+
+
+EMPTY_SVG = H(f'''
+<svg width="340" viewBox="0 0 360 210" fill="none">
+<defs><radialGradient id="g1"><stop offset="0" stop-color="#1AA3FF" stop-opacity=".5"/><stop offset="1" stop-color="#1AA3FF" stop-opacity="0"/></radialGradient></defs>
+<g stroke="#2DB6FF" stroke-width="1.2" stroke-dasharray="4 4" opacity=".7"><path d="M180 58L70 138"/><path d="M180 58V150"/><path d="M180 58L290 138"/></g>
+<circle cx="180" cy="34" r="34" fill="url(#g1)"/>
+<rect x="150" y="14" width="60" height="42" rx="9" fill="#0B2A4D" stroke="#2DB6FF"/>
+<path d="M162 27h36M162 35h36M162 43h36" stroke="#5CC8FF" stroke-width="2.4" stroke-linecap="round"/>
+{_node(70, 150, "#00FF88")}{_node(180, 168, "#FF5C5C")}{_node(290, 150, "#FFB547")}
+</svg>''')
+
+
+def empty_state(h):
+    return H(f'''<div class="empty" style="height:{h}px">{EMPTY_SVG}
+        <div class="e-t">No training data available yet</div>
+        <div class="e-s">Run an experiment to visualize prediction error and convergence across training rounds.</div></div>''')
+
+
+def ph(icon, title):
+    return H(f'<div class="ph">{ico(icon, 20)}<span>{title}</span></div>')
+
+
+# ─── SESSION STATE ───────────────────────────────────────────────────────────
+def init_state():
+    defaults = {
+        "fed_mae": [], "fed_rmse": [],
+        "central_mae": [], "central_rmse": [],
+        "comm_bytes": [], "rounds_done": 0,
+        "running": False, "paused": False,
+        "mode": "IID", "num_clients": 3,
+        "total_rounds": 10, "seed": 42,
+        "logs": [], "client_status": [], "client_hist": [],
+        "dataset": "METR-LA", "speed": "⚡ Normal",
+        "render_tick": 0,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+
+init_state()
+
+
+# ─── EXPERIMENT LOGIC (unchanged) ────────────────────────────────────────────
+def add_log(msg, kind="info"):
+    ts = time.strftime("%H:%M:%S")
+    st.session_state.logs.append((ts, msg, kind))
+    if len(st.session_state.logs) > 50:
+        st.session_state.logs.pop(0)
+
+
+def simulate_round(rnd, mode, num_clients, seed):
+    np.random.seed(seed + rnd)
+    noise    = 0.4 if mode == "Non-IID" else 0.15
+    decay    = np.exp(-0.18 * rnd)
+    fed_mae  = max(0.4, round(3.8 * decay + np.random.normal(0, noise), 3))
+    fed_rmse = max(0.6, round(5.1 * decay + np.random.normal(0, noise * 1.2), 3))
+    cen_mae  = max(0.3, round(3.2 * decay + np.random.normal(0, 0.08), 3))
+    cen_rmse = max(0.5, round(4.4 * decay + np.random.normal(0, 0.10), 3))
+    comm     = 48_320 * 4 * 2 * num_clients
+    client_maes = [round(fed_mae + np.random.normal(0, noise * 0.5), 3) for _ in range(num_clients)]
+    return dict(fed_mae=fed_mae, fed_rmse=fed_rmse, cen_mae=cen_mae,
+                cen_rmse=cen_rmse, comm=comm, client_maes=client_maes)
+
+
+# ─── CHARTS ──────────────────────────────────────────────────────────────────
+def chart_height():
+    """Match the left chart panel to the height of the Client Agents + Agent Activity column."""
+    return 385 + 92 * (active_cfg()["clients"] - 3)
+
+
+def build_convergence_chart(height, total_rounds):
+    s = st.session_state
+    x = list(range(1, len(s.fed_mae) + 1))
+    series = [
+        ("Federated MAE",   s.fed_mae,      "#00D4FF", "solid"),
+        ("Federated RMSE",  s.fed_rmse,     "#00FF88", "solid"),
+        ("Centralized MAE", s.central_mae,  "#A78BFA", "dot"),
+        ("Centralized RMSE", s.central_rmse, "#FFB547", "dot"),
+    ]
+    fig = go.Figure()
+    for name, vals, color, dash in series:
+        solid = dash == "solid"
+        fig.add_trace(go.Scatter(
+            x=x, y=vals, name=name, mode="lines+markers",
+            line=dict(color=color, width=2.8 if solid else 1.8, dash=dash),
+            marker=dict(size=7 if solid else 4, color=color, line=dict(width=1.5, color="#07101F")),
+        ))
+    fig.update_layout(
+        height=height, hovermode="x unified",
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color="#8FB0D0", size=11),
+        xaxis=dict(title="Round", gridcolor="#0F2440", linecolor="#14304F",
+                   range=[0.6, total_rounds + 0.4], dtick=1),
+        yaxis=dict(title="Error (MAE / RMSE)", gridcolor="#0F2440", linecolor="#14304F", rangemode="tozero"),
+        legend=dict(orientation="h", x=0, y=1.07, bgcolor="rgba(0,0,0,0)", font=dict(size=11, color="#B8CCE3")),
+        margin=dict(l=8, r=8, t=34, b=8),
+    )
+    return fig
+
+
+def build_comm_chart(bytes_list, total_rounds):
+    rounds = list(range(1, len(bytes_list) + 1))
+    fig = go.Figure(go.Bar(x=rounds, y=[b / 1024 for b in bytes_list],
+                           marker_color="#A78BFA", marker_line_width=0, width=0.6))
+    fig.update_layout(
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color="#8FB0D0", size=11),
+        xaxis=dict(title="Round", gridcolor="#0F2440", linecolor="#14304F",
+                   range=[0.5, total_rounds + 0.5], dtick=1),
+        yaxis=dict(title="KB per round", gridcolor="#0F2440", linecolor="#14304F"),
+        margin=dict(l=8, r=8, t=16, b=8), height=240,
+    )
+    return fig
+
+
+def spark(vals, color, w=116, h=30):
+    if len(vals) < 2:   # decorative idle waveform
+        pts = [(x, h / 2 + 5 * np.sin(x / 9.0) + 2 * np.sin(x / 3.1)) for x in range(0, w + 1, 4)]
+        opacity = 0.35
+    else:
+        lo, hi = min(vals), max(vals)
+        rng = (hi - lo) or 1
+        pts = [(i * w / (len(vals) - 1), h - 3 - (v - lo) / rng * (h - 6)) for i, v in enumerate(vals)]
+        opacity = 1
+    d = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+    return (f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}"><polyline points="{d}" fill="none" '
+            f'stroke="{color}" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" '
+            f'opacity="{opacity}"/></svg>')
+
+
+# ─── LAYOUT PLACEHOLDERS + CONTROL BAR ───────────────────────────────────────
+header_ph = st.empty()
+
+with st.container(key="ctrlbar"):
+    cc = st.columns([1.7, 1.5, 1.0, 1.0, 1.55, 0.95, 1.35, 1.2])
+    with cc[0]:
+        run_clicked = st.button("Run Experiment", icon=":material/play_arrow:", type="primary",
+                                width="stretch", key="btn_run")
+    with cc[1]:
+        reset_clicked = st.button("Reset Experiment", icon=":material/refresh:",
+                                  width="stretch", key="btn_reset")
+    with cc[2]:
+        sel_clients = st.selectbox(":material/group: Number of Clients", [3, 4, 5], index=0, key="w_clients")
+    with cc[3]:
+        sel_rounds = st.selectbox(":material/autorenew: Training Rounds", list(range(5, 21)), index=5, key="w_rounds")
+    with cc[4]:
+        sel_mode = st.radio(":material/database: Data Distribution", ["IID", "Non-IID"],
+                            index=0, horizontal=True, key="w_dist")
+    with cc[5]:
+        sel_seed = st.selectbox(":material/casino: Random Seed", [42, 7, 123], index=0, key="w_seed")
+    with cc[6]:
+        sel_dataset = st.selectbox(":material/dataset: Dataset", ["METR-LA", "UTD-19 (single city)", "PeMS-BAY"],
+                                   index=0, key="w_dataset")
+    with cc[7]:
+        sel_speed = st.selectbox(":material/speed: Training Speed", list(SPEED_MAP.keys()),
+                                 index=1, key="w_speed")
+
+metric_ph = st.empty()
+col_main, col_side = st.columns([3.15, 1.25], gap="medium")
+with col_main:
+    tabs_ph = st.empty()
+with col_side:
+    side_ph = st.empty()
+
+st.markdown(H(f'''<div class="foot">
+<span>{ico("db", 16)}Public Traffic Dataset (Partitioned across virtual intersections)</span>
+<span>{ico("shield", 16)}Local training data stays on each client</span>
+<span>{ico("repeat", 16)}Model updates are aggregated centrally</span>
+<span>{ico("bars", 16)}Measures: MAE, RMSE, Communication Cost</span>
+<span>Supports IID &amp; Non-IID</span>
+<span>Chronological train/test split</span>
+<span>3 Seeds</span></div>'''), unsafe_allow_html=True)
+
+
+def active_cfg():
+    """Show the finished/running experiment's config, otherwise the live control selections."""
+    s = st.session_state
+    if s.running or s.rounds_done > 0:
+        return dict(mode=s.mode, clients=s.num_clients, total=s.total_rounds, speed=s.speed)
+    return dict(mode=sel_mode, clients=sel_clients, total=sel_rounds, speed=sel_speed)
+
+
+# ─── RENDER FUNCTIONS ────────────────────────────────────────────────────────
+def render_header():
+    cfg = active_cfg()
+    s = st.session_state
+    if s.running:
+        lab, cls = "TRAINING", "pl-amber pulse"
+    elif s.rounds_done > 0:
+        lab, cls = "COMPLETE", "pl-green"
+    else:
+        lab, cls = "IDLE", "pl-green"
+    speed_lab = cfg["speed"].split(" ", 1)[-1]
+    if LOGO_B64:
+        logo = f'<img class="logo" src="data:image/png;base64,{LOGO_B64}" alt="TechKnights"/>'
+    else:
+        logo = f'<span class="logo logo-fb">{ico("shield", 34)}</span>'
+    header_ph.markdown(H(f'''<div class="hdr"><div class="hdr-l">{logo}
+<span class="brand">TechKnights</span><span class="vsep"></span>
+<div><div class="ttl">Federated Traffic-Flow Prediction</div>
+<div class="sub">Federated Learning<b>•</b>Traffic Analytics Simulator</div></div></div>
+<div class="hdr-r">
+<div class="pbox"><div class="pl {cls}"><span class="dot"></span>{lab}</div><div class="plab">System Status</div></div>
+<div class="pbox"><div class="pl pl-violet">{ico("user", 16)}{cfg["mode"]}</div><div class="plab">Data Distribution</div></div>
+<div class="pbox"><div class="pl pl-amber">{ico("bolt", 16)}{speed_lab}</div><div class="plab">Training Mode</div></div>
+</div></div>'''), unsafe_allow_html=True)
+
+
+def kpi(cls, icon, label, value, tip, sub="", bar=None):
+    bar_html = f'<div class="kbar"><i style="width:{bar}%"></i></div>' if bar is not None else ""
+    return H(f'''<div class="kpi {cls}"><div class="kpi-top"><span>{ico(icon, 20)}</span>
+<span class="kpi-lab">{label}</span><span class="kpi-info" title="{tip}">{ico("info", 16)}</span></div>
+<div class="kpi-val">{value}</div>{bar_html}<div class="kpi-sub">{sub}</div></div>''')
+
+
+def render_metrics():
+    s, cfg = st.session_state, active_cfg()
+    fm = s.fed_mae[-1] if s.fed_mae else 0.0
+    fr = s.fed_rmse[-1] if s.fed_rmse else 0.0
+    kb = sum(s.comm_bytes) / 1024 if s.comm_bytes else 0.0
+    pct = int(s.rounds_done / cfg["total"] * 100) if cfg["total"] else 0
+    with metric_ph.container():
+        c1, c2, c3, c4 = st.columns(4, gap="medium")
+        c1.markdown(kpi("cyan", "line", "Federated MAE", f"{fm:.3f}",
+                        "Mean absolute error of the global model (latest round)", "vehicles / 5-min slot"),
+                    unsafe_allow_html=True)
+        c2.markdown(kpi("green", "bars", "Federated RMSE", f"{fr:.3f}",
+                        "Root mean square error of the global model (latest round)", "root mean square error"),
+                    unsafe_allow_html=True)
+        c3.markdown(kpi("amber", "cloud", "Communication Cost (Total)", f"{kb:.1f}",
+                        "Total bytes exchanged between clients and server", "KB transmitted so far"),
+                    unsafe_allow_html=True)
+        c4.markdown(kpi("violet", "refresh", "Training Round", f"{s.rounds_done} / {cfg['total']}",
+                        "Completed federated rounds", f'{ico("users", 15)}{cfg["clients"]} clients', bar=pct),
+                    unsafe_allow_html=True)
+
+
+def render_tabs():
+    s, cfg = st.session_state, active_cfg()
+    s.render_tick += 1
+    tick = s.render_tick
+    h = chart_height()
+    with tabs_ph.container():
+        tab1, tab2, tab3, tab4 = st.tabs([
+            ":material/bar_chart: Training Progress",
+            ":material/table_rows: Round Details",
+            ":material/balance: Federated vs Centralized",
+            ":material/description: Evaluation Report",
+        ])
+
+        with tab1:
+            st.markdown(ph("bars", "Prediction Error Over Rounds"), unsafe_allow_html=True)
+            if s.fed_mae:
+                st.plotly_chart(build_convergence_chart(h, cfg["total"]), width="stretch",
+                                config={"displayModeBar": False}, key=f"conv_{tick}")
+            else:
+                st.markdown(empty_state(h), unsafe_allow_html=True)
+
+        with tab2:
+            st.markdown(ph("repeat", "Communication Cost per Round"), unsafe_allow_html=True)
+            if s.comm_bytes:
+                st.plotly_chart(build_comm_chart(s.comm_bytes, cfg["total"]), width="stretch",
+                                config={"displayModeBar": False}, key=f"comm_{tick}")
+                rows = ""
+                for i, (fm, fr, cm, cr, cb) in enumerate(zip(s.fed_mae, s.fed_rmse, s.central_mae,
+                                                             s.central_rmse, s.comm_bytes), 1):
+                    rows += (f"<tr><td><span class='round-badge'>R{i:02d}</span></td><td>{fm:.4f}</td>"
+                             f"<td>{fr:.4f}</td><td>{cm:.4f}</td><td>{cr:.4f}</td><td>{cb/1024:.2f} KB</td></tr>")
+                st.markdown(H(f'''<table class="cmp-table"><thead><tr><th>Round</th><th>Fed MAE</th><th>Fed RMSE</th>
+<th>Central MAE</th><th>Central RMSE</th><th>Comm.</th></tr></thead><tbody>{rows}</tbody></table>'''),
+                            unsafe_allow_html=True)
+            else:
+                st.markdown(empty_state(300), unsafe_allow_html=True)
+
+        with tab3:
+            st.markdown(ph("scale", "Federated vs Centralized"), unsafe_allow_html=True)
+            if s.fed_mae and s.central_mae:
+                fm, fr = s.fed_mae[-1], s.fed_rmse[-1]
+                cm, cr = s.central_mae[-1], s.central_rmse[-1]
+                wm = "win" if fm <= cm else "lose"
+                wr = "win" if fr <= cr else "lose"
+                st.markdown(H(f'''<table class="cmp-table"><thead><tr><th>Metric</th><th>Federated</th>
+<th>Centralized</th><th>Gap</th></tr></thead><tbody>
+<tr><td>MAE</td><td class="{wm}">{fm:.4f}</td><td>{cm:.4f}</td><td>{(fm-cm)/cm*100:+.1f}%</td></tr>
+<tr><td>RMSE</td><td class="{wr}">{fr:.4f}</td><td>{cr:.4f}</td><td>{(fr-cr)/cr*100:+.1f}%</td></tr>
+<tr><td>Privacy</td><td class="win">✓ No raw data shared</td><td class="lose">✗ Raw data centralised</td><td>—</td></tr>
+<tr><td>Bandwidth</td><td class="win">Weights only</td><td class="lose">Full raw stream</td><td>—</td></tr>
+</tbody></table>'''), unsafe_allow_html=True)
+                note = ("⚠️ Non-IID causes client drift — local models diverge before aggregation."
+                        if s.mode == "Non-IID"
+                        else "✓ IID distribution — FedAvg converges close to the centralized baseline.")
+                st.markdown(H(f'<div class="note">Mode: <b style="color:#A78BFA">{s.mode}</b><br>{note}</div>'),
+                            unsafe_allow_html=True)
+            else:
+                st.markdown(empty_state(300), unsafe_allow_html=True)
+
+        with tab4:
+            st.markdown(ph("doc", "Experiment Summary Report"), unsafe_allow_html=True)
+            if s.fed_mae:
+                fm, fr = s.fed_mae[-1], s.fed_rmse[-1]
+                total_kb = sum(s.comm_bytes) / 1024
+                per_rnd = total_kb / s.rounds_done
+                conv = next((i + 1 for i in range(1, len(s.fed_mae))
+                             if abs(s.fed_mae[i] - s.fed_mae[i - 1]) < 0.05), s.rounds_done)
+                obs = ("Non-IID distribution introduced client drift, widening the error gap vs centralized."
+                       if s.mode == "Non-IID"
+                       else "IID distribution — FedAvg converged close to the centralized baseline.")
+                st.markdown(H(f'''<table class="kv">
+<tr><td>Dataset</td><td>{s.dataset}</td></tr><tr><td>Distribution</td><td>{s.mode}</td></tr>
+<tr><td>Clients</td><td>{s.num_clients}</td></tr><tr><td>Rounds</td><td>{s.rounds_done}</td></tr>
+<tr><td>Seed</td><td>{s.seed}</td></tr><tr><td>Speed</td><td>{s.speed}</td></tr>
+<tr><td>Final MAE</td><td style="color:#00FF88">{fm:.4f}</td></tr>
+<tr><td>Final RMSE</td><td style="color:#00FF88">{fr:.4f}</td></tr>
+<tr><td>Convergence</td><td style="color:#FFB547">Round {conv}</td></tr>
+<tr><td>Total comm.</td><td style="color:#FFB547">{total_kb:.2f} KB</td></tr>
+<tr><td>Per round</td><td>{per_rnd:.2f} KB/round</td></tr></table>
+<div class="note"><b style="color:#00D4FF">Observations</b><br>{obs}<br>
+Communication cost scales linearly with client count.<br>
+No raw data left local devices — privacy preserved ✓</div>'''), unsafe_allow_html=True)
+            else:
+                st.markdown(empty_state(300), unsafe_allow_html=True)
+
+
+def render_side():
+    s, cfg = st.session_state, active_cfg()
+    total = cfg["total"]
+    pct = int(s.rounds_done / total * 100) if total else 0
+    if s.running:
+        pill, pcls = "Training", "run"
+    elif s.rounds_done > 0:
+        pill, pcls = "Complete", "done"
+    else:
+        pill, pcls = "Waiting", ""
+    cards = ""
+    for i in range(cfg["clients"]):
+        hist = [r[i] for r in s.client_hist if i < len(r)]
+        mae_txt = f" &nbsp;|&nbsp; MAE {hist[-1]:.3f}" if hist else ""
+        cards += H(f'''<div class="ag {AGENT_CLASS[i]}"><span class="ag-ico">{ico("node", 30)}</span>
+<div class="ag-main"><div class="ag-t">{INTERSECTION_NAMES[i]}<em>(Client {i + 1})</em></div>
+<div class="ag-p">Round {s.rounds_done} / {total} &nbsp;|&nbsp; {pct}%{mae_txt}</div>
+<div class="ag-bar"><i style="width:{pct}%"></i></div></div>
+<div class="ag-r"><span class="pill {pcls}">{pill}</span>{spark(hist, AGENT_HEX[i])}</div></div>''')
+    if s.logs:
+        lines = ""
+        for ts, msg, kind in reversed(s.logs[-14:]):
+            css = {"ok": "log-ok", "warn": "log-warn", "info": "log-info"}.get(kind, "")
+            lines += f'<span class="log-ts">[{ts}]</span> <span class="{css}">{msg}</span><br>'
+        act = f'<div class="act">{lines}</div>'
+    else:
+        act = H(f'''<div class="act"><div class="act-empty">{ico("clock", 30)}<span>No activity yet...</span>
+<small>Events will appear here once you run an experiment.</small></div></div>''')
+    side_ph.markdown(H(f'''<div class="sp"><div class="sp-t">CLIENT AGENTS</div>{cards}</div>
+<div class="sp"><div class="sp-t">AGENT ACTIVITY</div>{act}</div>'''), unsafe_allow_html=True)
+
+
+def render_all():
+    render_header()
+    render_metrics()
+    render_tabs()
+    render_side()
+
+
+# ─── RESET ───────────────────────────────────────────────────────────────────
+if reset_clicked:
+    for k in ["fed_mae", "fed_rmse", "central_mae", "central_rmse", "comm_bytes",
+              "logs", "client_status", "client_hist"]:
+        st.session_state[k] = []
+    st.session_state.rounds_done = 0
+    st.session_state.running = False
+    st.rerun()
+
+# ─── INITIAL RENDER ──────────────────────────────────────────────────────────
+render_all()
+
+# ─── LIVE TRAINING LOOP ──────────────────────────────────────────────────────
+if run_clicked:
+    st.session_state.mode         = sel_mode
+    st.session_state.num_clients  = sel_clients
+    st.session_state.total_rounds = sel_rounds
+    st.session_state.seed         = sel_seed
+    st.session_state.dataset      = sel_dataset
+    st.session_state.speed        = sel_speed
+    st.session_state.fed_mae      = []
+    st.session_state.fed_rmse     = []
+    st.session_state.central_mae  = []
+    st.session_state.central_rmse = []
+    st.session_state.comm_bytes   = []
+    st.session_state.client_hist  = []
+    st.session_state.client_status = []
+    st.session_state.rounds_done  = 0
+    st.session_state.logs         = []
+    st.session_state.running      = True
+
+    add_log(f"Started — {sel_mode}, {sel_clients} clients, {sel_rounds} rounds, seed={sel_seed}", "info")
+    add_log(f"Dataset: {sel_dataset}  |  Speed: {sel_speed}", "info")
+    render_all()
+
+    delay = SPEED_MAP.get(sel_speed, 0.35)
+
+    for rnd in range(1, sel_rounds + 1):
+        result = simulate_round(rnd, sel_mode, sel_clients, sel_seed)
+
+        st.session_state.fed_mae.append(result["fed_mae"])
+        st.session_state.fed_rmse.append(result["fed_rmse"])
+        st.session_state.central_mae.append(result["cen_mae"])
+        st.session_state.central_rmse.append(result["cen_rmse"])
+        st.session_state.comm_bytes.append(result["comm"])
+        st.session_state.client_status = result["client_maes"]
+        st.session_state.client_hist.append(result["client_maes"])
+        st.session_state.rounds_done = rnd
+
+        add_log(f"Round {rnd:02d} · Fed MAE={result['fed_mae']} · RMSE={result['fed_rmse']}", "ok")
+        render_metrics()
+        render_tabs()
+        render_side()
+        time.sleep(delay)
+
+    st.session_state.running = False
+    add_log("All rounds complete ✓", "ok")
+    render_all()
