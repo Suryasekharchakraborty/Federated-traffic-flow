@@ -1,19 +1,23 @@
 """
-build_db.py — ingest experiment_results_full.json into SQLite.
+build_db.py — ingest experiment_results_full.json and
+experiment_results_allclients.json into SQLite.
 Run: python src/build_db.py
 """
 import json
 import sqlite3
 from pathlib import Path
 
-RESULTS_JSON = Path(__file__).parent / "results" / "experiment_results_full.json"
-DB_PATH      = Path(__file__).parent / "results" / "experiments.db"
+RESULTS_DIR     = Path(__file__).parent / "results"
+RESULTS_FULL    = RESULTS_DIR / "experiment_results_full.json"       # 3 clients, old sweep
+RESULTS_ALLCLI  = RESULTS_DIR / "experiment_results_allclients.json" # 3/4/5 clients, new sweep
+DB_PATH         = RESULTS_DIR / "experiments.db"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS rounds (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     mode        TEXT NOT NULL,
     seed        INTEGER NOT NULL,
+    num_clients INTEGER NOT NULL DEFAULT 3,
     round       INTEGER NOT NULL,
     fed_mae     REAL NOT NULL,
     fed_rmse    REAL NOT NULL,
@@ -21,31 +25,43 @@ CREATE TABLE IF NOT EXISTS rounds (
     cen_rmse    REAL NOT NULL,
     comm_bytes  INTEGER NOT NULL,
     client_maes TEXT NOT NULL,
-    UNIQUE(mode, seed, round)
+    UNIQUE(mode, seed, num_clients, round)
 );
 """
 
-def main():
-    with open(RESULTS_JSON) as f:
+def load_rows(path, default_clients=3):
+    if not path.exists():
+        print(f"Skipping missing file: {path}")
+        return []
+    with open(path) as f:
         data = json.load(f)
+    rows = data["rounds"]
+    for r in rows:
+        r.setdefault("num_clients", default_clients)
+    return rows
 
+def main():
     conn = sqlite3.connect(DB_PATH)
+
+    # Old DB files may have the pre-num_clients schema — force a clean rebuild
+    conn.execute("DROP TABLE IF EXISTS rounds")
     conn.execute(SCHEMA)
 
-    rows = data["rounds"]
+    all_rows = load_rows(RESULTS_FULL, default_clients=3) + load_rows(RESULTS_ALLCLI)
+
     conn.executemany("""
         INSERT OR REPLACE INTO rounds
-        (mode, seed, round, fed_mae, fed_rmse, cen_mae, cen_rmse, comm_bytes, client_maes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (mode, seed, num_clients, round, fed_mae, fed_rmse, cen_mae, cen_rmse, comm_bytes, client_maes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, [
-        (r["mode"], r["seed"], r["round"], r["fed_mae"], r["fed_rmse"],
+        (r["mode"], r["seed"], r["num_clients"], r["round"], r["fed_mae"], r["fed_rmse"],
          r["cen_mae"], r["cen_rmse"], r["comm_bytes"], json.dumps(r["client_maes"]))
-        for r in rows
+        for r in all_rows
     ])
 
     conn.commit()
     n = conn.execute("SELECT COUNT(*) FROM rounds").fetchone()[0]
-    print(f"Ingested {len(rows)} rows. Total rows in DB: {n}")
+    print(f"Ingested {len(all_rows)} rows. Total rows in DB: {n}")
     conn.close()
 
 if __name__ == "__main__":
