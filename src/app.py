@@ -177,12 +177,13 @@ def load_logo_b64():
 LOGO_B64 = load_logo_b64()
 DB_PATH = Path(__file__).parent / "results" / "experiments.db"
 
-def load_experiment(mode: str, seed: int):
-    """Fetch all rounds for one (mode, seed) combo from SQLite."""
+def load_experiment(mode: str, seed: int, num_clients: int):
+    """Fetch all rounds for one (mode, seed, num_clients) combo from SQLite."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cur = conn.execute(
-        "SELECT * FROM rounds WHERE mode=? AND seed=? ORDER BY round", (mode, seed)
+        "SELECT * FROM rounds WHERE mode=? AND seed=? AND num_clients=? ORDER BY round",
+        (mode, seed, num_clients)
     )
     rows = [dict(r) for r in cur.fetchall()]
     conn.close()
@@ -591,8 +592,8 @@ if run_clicked:
     st.session_state.seed         = sel_seed
     # ...existing reset lines unchanged...
     st.session_state.running      = True
-
-    rows = load_experiment(sel_mode, sel_seed)
+    
+    rows = load_experiment(sel_mode, sel_seed, sel_clients)
     if not rows:
         add_log(f"No stored results for mode={sel_mode}, seed={sel_seed}. Run the Colab sweep first.", "warn")
         st.session_state.running = False
