@@ -78,25 +78,25 @@ def evaluate_global(state_dict, test_X, test_y, num_sensors, std, mean=0.0):
     return round(mae, 3), round(rmse, 3)
 
 
-def run_federated_round(global_state_dict, clients, test_X, test_y,
-                         num_sensors, local_epochs=1, lr=1e-2):
-    """One FedAvg round across all clients. Returns the new global
-    state_dict plus the metrics the Streamlit UI expects."""
+import fedavg
+
+def run_federated_round_fixed(global_state_dict, clients, test_X, test_y,
+                               num_sensors, local_epochs=1, lr=1e-2):
     updates, sizes, client_maes = [], [], []
     for c in clients:
-        sd, n, mae = client_update(global_state_dict, c, c["n_sensors"], local_epochs, lr)
+        sd, n, mae = fedavg.client_update(global_state_dict, c, num_sensors, local_epochs, lr)
         updates.append(sd)
         sizes.append(n)
         client_maes.append(round(mae, 3))
 
-    new_global = fed_avg(updates, sizes)
-    fed_mae, fed_rmse = evaluate_global(new_global, test_X, test_y, num_sensors,
-                                         std=clients[0]["std"])
-
-    comm_bytes = count_params(TrafficGRU(num_sensors)) * 4 * 2 * len(clients)  # fp32, up+down
+    new_global = fedavg.fed_avg(updates, sizes)
+    fed_mae, fed_rmse = fedavg.evaluate_global(new_global, test_X, test_y, num_sensors, std=clients[0]["std"])
+    comm_bytes = fedavg.count_params(fedavg.TrafficGRU(num_sensors)) * 4 * 2 * len(clients)
 
     return dict(global_state=new_global, fed_mae=fed_mae, fed_rmse=fed_rmse,
                 comm=comm_bytes, client_maes=client_maes)
+
+run_federated_round = run_federated_round_fixed
 
 
 def train_centralized_baseline(X_train, y_train, X_test, y_test, num_sensors, std,
