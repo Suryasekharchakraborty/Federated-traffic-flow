@@ -84,7 +84,7 @@ def run_federated_round_fixed(global_state_dict, clients, test_X, test_y,
                                num_sensors, local_epochs=1, lr=1e-2):
     updates, sizes, client_maes = [], [], []
     for c in clients:
-        sd, n, mae = fedavg.client_update(global_state_dict, c, num_sensors, local_epochs, lr)
+        sd, n, mae = client_update(global_state_dict, c, c["n_sensors"], local_epochs, lr)
         updates.append(sd)
         sizes.append(n)
         client_maes.append(round(mae, 3))
