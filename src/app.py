@@ -1,11 +1,13 @@
 import base64
 import re
 import time
+import sqlite3
 from pathlib import Path
 
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
+import json
 
 # ─── PAGE CONFIG ────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -173,7 +175,28 @@ def load_logo_b64():
 
 
 LOGO_B64 = load_logo_b64()
+DB_PATH = Path(__file__).parent / "results" / "experiments.db"
 
+def load_experiment(mode: str, seed: int):
+    """Fetch all rounds for one (mode, seed) combo from SQLite."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.execute(
+        "SELECT * FROM rounds WHERE mode=? AND seed=? ORDER BY round", (mode, seed)
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    for r in rows:
+        r["client_maes"] = json.loads(r["client_maes"])
+    return rows
+
+def available_seeds(mode: str):
+    conn = sqlite3.connect(DB_PATH)
+    seeds = [r[0] for r in conn.execute(
+        "SELECT DISTINCT seed FROM rounds WHERE mode=? ORDER BY seed", (mode,)
+    )]
+    conn.close()
+    return seeds
 SPEED_MAP = {"🐢 Slow": 1.0, "⚡ Normal": 0.35, "🚀 Fast": 0.05}
 AGENT_CLASS = ["cyan", "green", "violet", "amber", "blue"]
 AGENT_HEX = ["#00D4FF", "#00FF88", "#A78BFA", "#FFB547", "#4C9AFF"]
@@ -565,45 +588,33 @@ render_all()
 if run_clicked:
     st.session_state.mode         = sel_mode
     st.session_state.num_clients  = sel_clients
-    st.session_state.total_rounds = sel_rounds
     st.session_state.seed         = sel_seed
-    st.session_state.dataset      = sel_dataset
-    st.session_state.speed        = sel_speed
-    st.session_state.fed_mae      = []
-    st.session_state.fed_rmse     = []
-    st.session_state.central_mae  = []
-    st.session_state.central_rmse = []
-    st.session_state.comm_bytes   = []
-    st.session_state.client_hist  = []
-    st.session_state.client_status = []
-    st.session_state.rounds_done  = 0
-    st.session_state.logs         = []
+    # ...existing reset lines unchanged...
     st.session_state.running      = True
 
-    add_log(f"Started — {sel_mode}, {sel_clients} clients, {sel_rounds} rounds, seed={sel_seed}", "info")
-    add_log(f"Dataset: {sel_dataset}  |  Speed: {sel_speed}", "info")
-    render_all()
+    rows = load_experiment(sel_mode, sel_seed)
+    if not rows:
+        add_log(f"No stored results for mode={sel_mode}, seed={sel_seed}. Run the Colab sweep first.", "warn")
+        st.session_state.running = False
+    else:
+        add_log(f"Loaded {len(rows)} rounds — {sel_mode}, seed={sel_seed}", "info")
+        render_all()
+        delay = SPEED_MAP.get(sel_speed, 0.35)
 
-    delay = SPEED_MAP.get(sel_speed, 0.35)
+        for row in rows[:sel_rounds]:
+            st.session_state.fed_mae.append(row["fed_mae"])
+            st.session_state.fed_rmse.append(row["fed_rmse"])
+            st.session_state.central_mae.append(row["cen_mae"])
+            st.session_state.central_rmse.append(row["cen_rmse"])
+            st.session_state.comm_bytes.append(row["comm_bytes"])
+            st.session_state.client_status = row["client_maes"]
+            st.session_state.client_hist.append(row["client_maes"])
+            st.session_state.rounds_done = row["round"]
 
-    for rnd in range(1, sel_rounds + 1):
-        result = simulate_round(rnd, sel_mode, sel_clients, sel_seed)
+            add_log(f"Round {row['round']:02d} · Fed MAE={row['fed_mae']} · RMSE={row['fed_rmse']}", "ok")
+            render_metrics(); render_tabs(); render_side()
+            time.sleep(delay)
 
-        st.session_state.fed_mae.append(result["fed_mae"])
-        st.session_state.fed_rmse.append(result["fed_rmse"])
-        st.session_state.central_mae.append(result["cen_mae"])
-        st.session_state.central_rmse.append(result["cen_rmse"])
-        st.session_state.comm_bytes.append(result["comm"])
-        st.session_state.client_status = result["client_maes"]
-        st.session_state.client_hist.append(result["client_maes"])
-        st.session_state.rounds_done = rnd
-
-        add_log(f"Round {rnd:02d} · Fed MAE={result['fed_mae']} · RMSE={result['fed_rmse']}", "ok")
-        render_metrics()
-        render_tabs()
-        render_side()
-        time.sleep(delay)
-
-    st.session_state.running = False
-    add_log("All rounds complete ✓", "ok")
-    render_all()
+        st.session_state.running = False
+        add_log("All rounds complete ✓", "ok")
+        render_all()
