@@ -175,7 +175,28 @@ def load_logo_b64():
 
 
 LOGO_B64 = load_logo_b64()
+DB_PATH = Path(__file__).parent / "results" / "experiments.db"
 
+def load_experiment(mode: str, seed: int):
+    """Fetch all rounds for one (mode, seed) combo from SQLite."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.execute(
+        "SELECT * FROM rounds WHERE mode=? AND seed=? ORDER BY round", (mode, seed)
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    for r in rows:
+        r["client_maes"] = json.loads(r["client_maes"])
+    return rows
+
+def available_seeds(mode: str):
+    conn = sqlite3.connect(DB_PATH)
+    seeds = [r[0] for r in conn.execute(
+        "SELECT DISTINCT seed FROM rounds WHERE mode=? ORDER BY seed", (mode,)
+    )]
+    conn.close()
+    return seeds
 SPEED_MAP = {"🐢 Slow": 1.0, "⚡ Normal": 0.35, "🚀 Fast": 0.05}
 AGENT_CLASS = ["cyan", "green", "violet", "amber", "blue"]
 AGENT_HEX = ["#00D4FF", "#00FF88", "#A78BFA", "#FFB547", "#4C9AFF"]
@@ -597,27 +618,3 @@ if run_clicked:
         st.session_state.running = False
         add_log("All rounds complete ✓", "ok")
         render_all()
-
-    delay = SPEED_MAP.get(sel_speed, 0.35)
-
-    for rnd in range(1, sel_rounds + 1):
-        result = simulate_round(rnd, sel_mode, sel_clients, sel_seed)
-
-        st.session_state.fed_mae.append(result["fed_mae"])
-        st.session_state.fed_rmse.append(result["fed_rmse"])
-        st.session_state.central_mae.append(result["cen_mae"])
-        st.session_state.central_rmse.append(result["cen_rmse"])
-        st.session_state.comm_bytes.append(result["comm"])
-        st.session_state.client_status = result["client_maes"]
-        st.session_state.client_hist.append(result["client_maes"])
-        st.session_state.rounds_done = rnd
-
-        add_log(f"Round {rnd:02d} · Fed MAE={result['fed_mae']} · RMSE={result['fed_rmse']}", "ok")
-        render_metrics()
-        render_tabs()
-        render_side()
-        time.sleep(delay)
-
-    st.session_state.running = False
-    add_log("All rounds complete ✓", "ok")
-    render_all()
