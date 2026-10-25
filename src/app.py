@@ -1,11 +1,13 @@
 import base64
 import re
 import time
+import sqlite3
 from pathlib import Path
 
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
+import json
 
 # ─── PAGE CONFIG ────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -565,24 +567,36 @@ render_all()
 if run_clicked:
     st.session_state.mode         = sel_mode
     st.session_state.num_clients  = sel_clients
-    st.session_state.total_rounds = sel_rounds
     st.session_state.seed         = sel_seed
-    st.session_state.dataset      = sel_dataset
-    st.session_state.speed        = sel_speed
-    st.session_state.fed_mae      = []
-    st.session_state.fed_rmse     = []
-    st.session_state.central_mae  = []
-    st.session_state.central_rmse = []
-    st.session_state.comm_bytes   = []
-    st.session_state.client_hist  = []
-    st.session_state.client_status = []
-    st.session_state.rounds_done  = 0
-    st.session_state.logs         = []
+    # ...existing reset lines unchanged...
     st.session_state.running      = True
 
-    add_log(f"Started — {sel_mode}, {sel_clients} clients, {sel_rounds} rounds, seed={sel_seed}", "info")
-    add_log(f"Dataset: {sel_dataset}  |  Speed: {sel_speed}", "info")
-    render_all()
+    rows = load_experiment(sel_mode, sel_seed)
+    if not rows:
+        add_log(f"No stored results for mode={sel_mode}, seed={sel_seed}. Run the Colab sweep first.", "warn")
+        st.session_state.running = False
+    else:
+        add_log(f"Loaded {len(rows)} rounds — {sel_mode}, seed={sel_seed}", "info")
+        render_all()
+        delay = SPEED_MAP.get(sel_speed, 0.35)
+
+        for row in rows[:sel_rounds]:
+            st.session_state.fed_mae.append(row["fed_mae"])
+            st.session_state.fed_rmse.append(row["fed_rmse"])
+            st.session_state.central_mae.append(row["cen_mae"])
+            st.session_state.central_rmse.append(row["cen_rmse"])
+            st.session_state.comm_bytes.append(row["comm_bytes"])
+            st.session_state.client_status = row["client_maes"]
+            st.session_state.client_hist.append(row["client_maes"])
+            st.session_state.rounds_done = row["round"]
+
+            add_log(f"Round {row['round']:02d} · Fed MAE={row['fed_mae']} · RMSE={row['fed_rmse']}", "ok")
+            render_metrics(); render_tabs(); render_side()
+            time.sleep(delay)
+
+        st.session_state.running = False
+        add_log("All rounds complete ✓", "ok")
+        render_all()
 
     delay = SPEED_MAP.get(sel_speed, 0.35)
 
