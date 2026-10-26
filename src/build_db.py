@@ -40,14 +40,14 @@ def load_rows(path, default_clients=3):
         r.setdefault("num_clients", default_clients)
     return rows
 
+RESULTS_20ROUNDS = RESULTS_DIR / "experiment_results_20rounds.json"
+
 def main():
     conn = sqlite3.connect(DB_PATH)
-
-    # Old DB files may have the pre-num_clients schema — force a clean rebuild
     conn.execute("DROP TABLE IF EXISTS rounds")
     conn.execute(SCHEMA)
 
-    all_rows = load_rows(RESULTS_FULL, default_clients=3) + load_rows(RESULTS_ALLCLI)
+    all_rows = load_rows(RESULTS_20ROUNDS)   # single source of truth now, replaces old 10-round files
 
     conn.executemany("""
         INSERT OR REPLACE INTO rounds
@@ -58,7 +58,6 @@ def main():
          r["cen_mae"], r["cen_rmse"], r["comm_bytes"], json.dumps(r["client_maes"]))
         for r in all_rows
     ])
-
     conn.commit()
     n = conn.execute("SELECT COUNT(*) FROM rounds").fetchone()[0]
     print(f"Ingested {len(all_rows)} rows. Total rows in DB: {n}")
