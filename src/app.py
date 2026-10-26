@@ -587,12 +587,23 @@ render_all()
 
 # ─── LIVE TRAINING LOOP ──────────────────────────────────────────────────────
 if run_clicked:
-    st.session_state.mode         = sel_mode
-    st.session_state.num_clients  = sel_clients
-    st.session_state.seed         = sel_seed
-    # ...existing reset lines unchanged...
-    st.session_state.running      = True
-    
+    if run_clicked:
+        st.session_state.mode         = sel_mode
+        st.session_state.num_clients  = sel_clients
+        st.session_state.total_rounds = sel_rounds          # ← the missing line
+        st.session_state.seed         = sel_seed
+        st.session_state.dataset      = sel_dataset
+        st.session_state.speed        = sel_speed
+        st.session_state.fed_mae      = []
+        st.session_state.fed_rmse     = []
+        st.session_state.central_mae  = []
+        st.session_state.central_rmse = []
+        st.session_state.comm_bytes   = []
+        st.session_state.client_hist  = []
+        st.session_state.client_status = []
+        st.session_state.rounds_done  = 0
+        st.session_state.logs         = []
+        st.session_state.running      = True
     rows = load_experiment(sel_mode, sel_seed, sel_clients)
     if not rows:
         add_log(f"No stored results for mode={sel_mode}, seed={sel_seed}. Run the Colab sweep first.", "warn")
