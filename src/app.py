@@ -9,6 +9,17 @@ import plotly.graph_objects as go
 import streamlit as st
 import json
 
+from io import BytesIO
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
+                                  TableStyle, PageBreak)
+from docx import Document
+from docx.shared import Pt, Inches, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+
 # ─── PAGE CONFIG ────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="TechKnights | Federated Traffic-Flow Prediction",
@@ -392,6 +403,186 @@ def active_cfg():
         return dict(mode=s.mode, clients=s.num_clients, total=s.total_rounds, speed=s.speed)
     return dict(mode=sel_mode, clients=sel_clients, total=sel_rounds, speed=sel_speed)
 
+# ─── REPORT GENERATION ───────────────────────────────────────────────────────
+def _report_data():
+    """Collect everything needed for a report from current session state."""
+    s = st.session_state
+    fm, fr = s.fed_mae[-1], s.fed_rmse[-1]
+    cm_, cr = s.central_mae[-1], s.central_rmse[-1]
+    total_kb = sum(s.comm_bytes) / 1024
+    per_rnd = total_kb / s.rounds_done if s.rounds_done else 0
+    conv = next((i + 1 for i in range(1, len(s.fed_mae))
+                 if abs(s.fed_mae[i] - s.fed_mae[i - 1]) < 0.05), s.rounds_done)
+    rounds_table = list(zip(
+        range(1, len(s.fed_mae) + 1), s.fed_mae, s.fed_rmse,
+        s.central_mae, s.central_rmse, s.comm_bytes
+    ))
+    return dict(
+        dataset=s.dataset, mode=s.mode, clients=s.num_clients, rounds=s.rounds_done,
+        seed=s.seed, speed=s.speed, final_mae=fm, final_rmse=fr,
+        central_mae=cm_, central_rmse=cr, total_kb=total_kb, per_rnd=per_rnd,
+        convergence=conv, rounds_table=rounds_table,
+        client_maes=s.client_status,
+    )
+
+
+def build_pdf_report() -> bytes:
+    d = _report_data()
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                             topMargin=1.5*cm, bottomMargin=1.5*cm,
+                             leftMargin=1.8*cm, rightMargin=1.8*cm)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("TK_Title", parent=styles["Title"], textColor=colors.HexColor("#0B5BD3"))
+    h2 = ParagraphStyle("TK_H2", parent=styles["Heading2"], textColor=colors.HexColor("#0B5BD3"),
+                         spaceBefore=14, spaceAfter=6)
+    body = styles["BodyText"]
+
+    elems = [
+        Paragraph("TechKnights — Federated Traffic-Flow Prediction", title_style),
+        Paragraph("Experiment Evaluation Report", styles["Heading3"]),
+        Spacer(1, 10),
+    ]
+
+    # Config table
+    cfg_rows = [
+        ["Dataset", d["dataset"]], ["Distribution", d["mode"]],
+        ["Clients", str(d["clients"])], ["Rounds completed", str(d["rounds"])],
+        ["Seed", str(d["seed"])], ["Speed", d["speed"]],
+    ]
+    elems += [Paragraph("Configuration", h2), _table(cfg_rows, [6*cm, 9*cm])]
+
+    # Summary metrics
+    metric_rows = [
+        ["Final Federated MAE", f"{d['final_mae']:.4f}"],
+        ["Final Federated RMSE", f"{d['final_rmse']:.4f}"],
+        ["Final Centralized MAE", f"{d['central_mae']:.4f}"],
+        ["Final Centralized RMSE", f"{d['central_rmse']:.4f}"],
+        ["Convergence round", str(d["convergence"])],
+        ["Total communication", f"{d['total_kb']:.2f} KB"],
+        ["Communication per round", f"{d['per_rnd']:.2f} KB/round"],
+    ]
+    elems += [Paragraph("Summary Metrics", h2), _table(metric_rows, [6*cm, 9*cm])]
+
+    # Round-wise table
+    rt_header = ["Round", "Fed MAE", "Fed RMSE", "Cen MAE", "Cen RMSE", "Comm (KB)"]
+    rt_rows = [rt_header] + [
+        [str(r), f"{fm:.4f}", f"{fr:.4f}", f"{cm_:.4f}", f"{cr:.4f}", f"{cb/1024:.2f}"]
+        for r, fm, fr, cm_, cr, cb in d["rounds_table"]
+    ]
+    elems += [Paragraph("Round-wise Metrics", h2), _table(rt_rows, [2*cm]*6, header=True)]
+
+    # Client performance
+    if d["client_maes"]:
+        cp_rows = [["Client", "Final MAE"]] + [
+            [f"Client {i+1}", f"{v:.4f}"] for i, v in enumerate(d["client_maes"])
+        ]
+        elems += [Paragraph("Client Performance (final round)", h2), _table(cp_rows, [7*cm, 7*cm], header=True)]
+
+    # Fed vs Centralized comparison
+    comp_rows = [
+        ["Metric", "Federated", "Centralized", "Gap"],
+        ["MAE", f"{d['final_mae']:.4f}", f"{d['central_mae']:.4f}",
+         f"{(d['final_mae']-d['central_mae'])/d['central_mae']*100:+.1f}%"],
+        ["RMSE", f"{d['final_rmse']:.4f}", f"{d['central_rmse']:.4f}",
+         f"{(d['final_rmse']-d['central_rmse'])/d['central_rmse']*100:+.1f}%"],
+        ["Privacy", "No raw data shared", "Raw data centralised", "—"],
+        ["Bandwidth", "Weights only", "Full raw stream", "—"],
+    ]
+    elems += [Paragraph("Federated vs Centralized", h2), _table(comp_rows, [4*cm]*4, header=True)]
+
+    doc.build(elems)
+    return buf.getvalue()
+
+
+def _table(rows, col_widths, header=False):
+    t = Table(rows, colWidths=col_widths)
+    style = [
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#1A2535")),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]
+    if header:
+        style += [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0B5BD3")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ]
+    t.setStyle(TableStyle(style))
+    return t
+
+
+def build_docx_report() -> bytes:
+    d = _report_data()
+    doc = Document()
+
+    title = doc.add_heading("TechKnights — Federated Traffic-Flow Prediction", level=0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    sub = doc.add_paragraph("Experiment Evaluation Report")
+    sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    doc.add_heading("Configuration", level=1)
+    _docx_kv_table(doc, [
+        ("Dataset", d["dataset"]), ("Distribution", d["mode"]),
+        ("Clients", str(d["clients"])), ("Rounds completed", str(d["rounds"])),
+        ("Seed", str(d["seed"])), ("Speed", d["speed"]),
+    ])
+
+    doc.add_heading("Summary Metrics", level=1)
+    _docx_kv_table(doc, [
+        ("Final Federated MAE", f"{d['final_mae']:.4f}"),
+        ("Final Federated RMSE", f"{d['final_rmse']:.4f}"),
+        ("Final Centralized MAE", f"{d['central_mae']:.4f}"),
+        ("Final Centralized RMSE", f"{d['central_rmse']:.4f}"),
+        ("Convergence round", str(d["convergence"])),
+        ("Total communication", f"{d['total_kb']:.2f} KB"),
+        ("Communication per round", f"{d['per_rnd']:.2f} KB/round"),
+    ])
+
+    doc.add_heading("Round-wise Metrics", level=1)
+    rt = doc.add_table(rows=1, cols=6)
+    rt.style = "Light Grid Accent 1"
+    hdr = rt.rows[0].cells
+    for i, h in enumerate(["Round", "Fed MAE", "Fed RMSE", "Cen MAE", "Cen RMSE", "Comm (KB)"]):
+        hdr[i].text = h
+    for r, fm, fr, cm_, cr, cb in d["rounds_table"]:
+        row = rt.add_row().cells
+        row[0].text, row[1].text, row[2].text = str(r), f"{fm:.4f}", f"{fr:.4f}"
+        row[3].text, row[4].text, row[5].text = f"{cm_:.4f}", f"{cr:.4f}", f"{cb/1024:.2f}"
+
+    if d["client_maes"]:
+        doc.add_heading("Client Performance (final round)", level=1)
+        ct = doc.add_table(rows=1, cols=2)
+        ct.style = "Light Grid Accent 1"
+        ct.rows[0].cells[0].text, ct.rows[0].cells[1].text = "Client", "Final MAE"
+        for i, v in enumerate(d["client_maes"]):
+            row = ct.add_row().cells
+            row[0].text, row[1].text = f"Client {i+1}", f"{v:.4f}"
+
+    doc.add_heading("Federated vs Centralized", level=1)
+    _docx_kv_table(doc, [
+        ("MAE — Federated", f"{d['final_mae']:.4f}"),
+        ("MAE — Centralized", f"{d['central_mae']:.4f}"),
+        ("RMSE — Federated", f"{d['final_rmse']:.4f}"),
+        ("RMSE — Centralized", f"{d['central_rmse']:.4f}"),
+        ("Privacy", "Federated: no raw data shared  |  Centralized: raw data centralised"),
+        ("Bandwidth", "Federated: weights only  |  Centralized: full raw stream"),
+    ])
+
+    buf = BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def _docx_kv_table(doc, pairs):
+    t = doc.add_table(rows=0, cols=2)
+    t.style = "Light List Accent 1"
+    for k, v in pairs:
+        row = t.add_row().cells
+        row[0].text, row[1].text = k, v
+
 
 # ─── RENDER FUNCTIONS ────────────────────────────────────────────────────────
 def render_header():
@@ -530,6 +721,25 @@ def render_tabs():
 <div class="note"><b style="color:#00D4FF">Observations</b><br>{obs}<br>
 Communication cost scales linearly with client count.<br>
 No raw data left local devices — privacy preserved ✓</div>'''), unsafe_allow_html=True)
+
+                # ── Download buttons (only shown when valid results exist) ──
+                if not s.running:   # only generate reports once training has finished
+                    dl1, dl2 = st.columns(2)
+                    with dl1:
+                        st.download_button(
+                            "📄 Download PDF Report", data=build_pdf_report(),
+                            file_name=f"TechKnights_Report_{s.mode}_seed{s.seed}.pdf",
+                            mime="application/pdf", width="stretch",
+                            key=f"pdf_dl_{tick}",
+                        )
+                    with dl2:
+                        st.download_button(
+                            "📝 Download Word Report", data=build_docx_report(),
+                            file_name=f"TechKnights_Report_{s.mode}_seed{s.seed}.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            width="stretch",
+                            key=f"docx_dl_{tick}",
+                        )
             else:
                 st.markdown(empty_state(300), unsafe_allow_html=True)
 
