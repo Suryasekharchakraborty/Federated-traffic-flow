@@ -403,16 +403,143 @@ def active_cfg():
         return dict(mode=s.mode, clients=s.num_clients, total=s.total_rounds, speed=s.speed)
     return dict(mode=sel_mode, clients=sel_clients, total=sel_rounds, speed=sel_speed)
 
+# ─── COMMUNICATION-COST ACCOUNTING ───────────────────────────────────────────
+# Federated and Centralized costs are both measured in real float32 bytes
+# with the SAME accounting convention, so the comparison is apples-to-apples
+# and nothing here is an invented/hardcoded total:
+#
+#   • Federated, per round: exactly the `comm_bytes` already stored in
+#     experiments.db for that round — the real bytes the FedAvg simulator
+#     exchanged (global-model DOWNLOAD + local-update UPLOAD, for every
+#     client): 2 * num_clients * model_params * FLOAT_BYTES. The federated
+#     TOTAL is simply the sum of that real per-round figure across all
+#     completed rounds — no change from what the dashboard already computed.
+#   • The one-way MODEL payload size is back-solved from that same real
+#     number (comm_bytes / (2 * num_clients)). The model doesn't change size
+#     between rounds, so this is exact, not estimated.
+#   • Centralized has no per-round weight exchange — instead every client's
+#     RAW sensor data has to reach the server (upload only; a centralized
+#     trainer does not need to broadcast anything back during training, so
+#     there is no applicable download leg to add here). That one-time raw
+#     payload is SENSORS * TRAIN_TIMESTEPS * FLOAT_BYTES, where SENSORS and
+#     TRAIN_TIMESTEPS are pulled directly from fed_backend/data_loader.py
+#     rather than assumed:
+#       - data_loader.py's build_federated_dataset() truncates METR-LA to
+#         its `max_sensors` parameter, DEFAULT 60 (not the full 207 —
+#         this is also why the README's architecture section says
+#         "input=60 sensors"). Only the TRAIN split needs to reach a
+#         central server (val/test aren't needed for training), and
+#         data_loader.py's own TRAIN_FRAC (0.7) says how much of the
+#         34,272-step METR-LA series that is.
+#     We try to import SENSORS_DEFAULT and TRAIN_FRAC directly from
+#     data_loader.py so this number updates automatically if those values
+#     ever change; if the module can't be imported (e.g. app.py deployed
+#     without fed_backend on the path), we fall back to the same defaults,
+#     clearly labeled below so they're easy to correct.
+FLOAT_BYTES = 4                 # float32
+METR_LA_TIMESTEPS = 34_272      # official METR-LA length (5-min steps, ~4 months)
+
+try:
+    import inspect
+    from fed_backend.data_loader import TRAIN_FRAC as _DL_TRAIN_FRAC
+    from fed_backend.data_loader import build_federated_dataset as _DL_BUILD
+    SENSORS_DEFAULT = inspect.signature(_DL_BUILD).parameters["max_sensors"].default
+    TRAIN_FRAC = _DL_TRAIN_FRAC
+except Exception:
+    # Fallback — matches data_loader.py's current defaults exactly. Update
+    # these two if data_loader.py's max_sensors / TRAIN_FRAC ever change
+    # and this import isn't available in your deployment.
+    SENSORS_DEFAULT = 60
+    TRAIN_FRAC = 0.7
+
+
+def model_bytes_per_direction(comm_bytes_values, num_clients: int) -> float:
+    """One-way (upload OR download) model payload size, in bytes, back-solved
+    from the real stored comm_bytes of completed rounds. Model size is
+    constant across rounds, so this is exact — not a guess."""
+    if not comm_bytes_values or not num_clients:
+        return 0.0
+    avg_round_bytes = sum(comm_bytes_values) / len(comm_bytes_values)
+    return avg_round_bytes / (2 * num_clients)
+
+
+def centralized_comm_bytes(num_sensors: int = None) -> int:
+    """Bytes required to ship the raw TRAINING-split sensor data to a
+    central server once — the real centralized-training requirement being
+    compared against the federated run's cumulative weight-update traffic.
+    Uses the actual sensor count this run trained on (from the DB/run
+    config) when available, falling back to data_loader.py's default."""
+    sensors = num_sensors or SENSORS_DEFAULT
+    train_timesteps = round(TRAIN_FRAC * METR_LA_TIMESTEPS)
+    return sensors * train_timesteps * FLOAT_BYTES
+
+
+def _fmt_bytes(b: float) -> str:
+    """Human-friendly byte formatting shared by the dashboard, PDF and DOCX
+    reports so every surface prints the exact same figure."""
+    if b >= 1024 * 1024:
+        return f"{b / (1024 * 1024):.2f} MB"
+    return f"{b / 1024:.2f} KB"
+
+
+# ─── CONVERGENCE DETECTION ────────────────────────────────────────────────────
+# A round is only reported as "converged" once the metric has STAYED stable
+# for CONVERGENCE_WINDOW consecutive rounds — not just one lucky small
+# round-over-round dip. The previous one-liner compared only ONE pair of
+# consecutive rounds, so a single small fluctuation (common early in
+# Non-IID runs, which have higher injected noise) was enough to report
+# "converged" even though later rounds kept swinging — e.g. Round 5 being
+# reported for seed=42, 15 rounds, Non-IID, despite later fluctuations.
+CONVERGENCE_WINDOW = 3   # consecutive rounds required to confirm stability
+CONVERGENCE_EPS = 0.05   # max allowed |MAE[r] - MAE[r-1]| within that window
+
+
+def detect_convergence(series, window=CONVERGENCE_WINDOW, eps=CONVERGENCE_EPS):
+    """
+    Returns the 1-indexed round at which `series` first becomes stable for
+    `window` consecutive rounds (every round-over-round change inside that
+    window is below `eps`), or None if it never stabilises for that long.
+    """
+    n = len(series)
+    if n < window:
+        return None
+    deltas = [abs(series[i] - series[i - 1]) for i in range(1, n)]
+    needed = window - 1  # deltas needed to confirm `window` stable rounds
+    for start in range(len(deltas) - needed + 1):
+        if all(d < eps for d in deltas[start:start + needed]):
+            return start + 1   # 1-indexed round where the stable streak begins
+    return None
+
+
+def convergence_label(series, window=CONVERGENCE_WINDOW, eps=CONVERGENCE_EPS):
+    r = detect_convergence(series, window, eps)
+    return f"Round {r}" if r else "Not Converged"
+
+
 # ─── REPORT GENERATION ───────────────────────────────────────────────────────
 def _report_data():
     """Collect everything needed for a report from current session state."""
     s = st.session_state
     fm, fr = s.fed_mae[-1], s.fed_rmse[-1]
     cm_, cr = s.central_mae[-1], s.central_rmse[-1]
-    total_kb = sum(s.comm_bytes) / 1024
+
+    fed_total_bytes = sum(s.comm_bytes)                      # unchanged — already accurate
+    total_kb = fed_total_bytes / 1024
     per_rnd = total_kb / s.rounds_done if s.rounds_done else 0
-    conv = next((i + 1 for i in range(1, len(s.fed_mae))
-                 if abs(s.fed_mae[i] - s.fed_mae[i - 1]) < 0.05), s.rounds_done)
+
+    model_bytes = model_bytes_per_direction(s.comm_bytes, s.num_clients)
+    # `sensors_used` isn't in the current DB schema (see build_db.py), so this
+    # falls back to data_loader.py's own default (SENSORS_DEFAULT) unless a
+    # future schema change adds a real per-run sensor count to read instead.
+    cen_total_bytes = centralized_comm_bytes(getattr(s, "sensors_used", None))
+    comm_reduction_pct = (
+        (cen_total_bytes - fed_total_bytes) / cen_total_bytes * 100
+        if cen_total_bytes else 0.0
+    )
+
+    conv = detect_convergence(s.fed_mae)
+    conv_label = f"Round {conv}" if conv else "Not Converged"
+
     rounds_table = list(zip(
         range(1, len(s.fed_mae) + 1), s.fed_mae, s.fed_rmse,
         s.central_mae, s.central_rmse, s.comm_bytes
@@ -421,7 +548,10 @@ def _report_data():
         dataset=s.dataset, mode=s.mode, clients=s.num_clients, rounds=s.rounds_done,
         seed=s.seed, speed=s.speed, final_mae=fm, final_rmse=fr,
         central_mae=cm_, central_rmse=cr, total_kb=total_kb, per_rnd=per_rnd,
-        convergence=conv, rounds_table=rounds_table,
+        fed_total_bytes=fed_total_bytes, cen_total_bytes=cen_total_bytes,
+        model_bytes=model_bytes, comm_reduction_pct=comm_reduction_pct,
+        convergence=conv, convergence_label=conv_label,
+        rounds_table=rounds_table,
         client_maes=s.client_status,
     )
 
@@ -458,11 +588,21 @@ def build_pdf_report() -> bytes:
         ["Final Federated RMSE", f"{d['final_rmse']:.4f}"],
         ["Final Centralized MAE", f"{d['central_mae']:.4f}"],
         ["Final Centralized RMSE", f"{d['central_rmse']:.4f}"],
-        ["Convergence round", str(d["convergence"])],
-        ["Total communication", f"{d['total_kb']:.2f} KB"],
+        ["Convergence round", d["convergence_label"]],
+        ["Total communication (federated)", f"{d['total_kb']:.2f} KB"],
         ["Communication per round", f"{d['per_rnd']:.2f} KB/round"],
     ]
     elems += [Paragraph("Summary Metrics", h2), _table(metric_rows, [6*cm, 9*cm])]
+
+    # Communication cost comparison (federated vs centralized, same methodology)
+    comm_rows = [
+        ["Federated total (cumulative, actual)", _fmt_bytes(d["fed_total_bytes"])],
+        [f"Centralized total (one-time, {SENSORS_DEFAULT} sensors × {TRAIN_FRAC:.0%} train split)",
+         _fmt_bytes(d["cen_total_bytes"])],
+        ["Model payload per transfer", _fmt_bytes(d["model_bytes"])],
+        ["Reduction vs Centralized", f"{d['comm_reduction_pct']:.1f}%"],
+    ]
+    elems += [Paragraph("Communication Cost Comparison", h2), _table(comm_rows, [8*cm, 7*cm])]
 
     # Round-wise table
     rt_header = ["Round", "Fed MAE", "Fed RMSE", "Cen MAE", "Cen RMSE", "Comm (KB)"]
@@ -536,9 +676,18 @@ def build_docx_report() -> bytes:
         ("Final Federated RMSE", f"{d['final_rmse']:.4f}"),
         ("Final Centralized MAE", f"{d['central_mae']:.4f}"),
         ("Final Centralized RMSE", f"{d['central_rmse']:.4f}"),
-        ("Convergence round", str(d["convergence"])),
-        ("Total communication", f"{d['total_kb']:.2f} KB"),
+        ("Convergence round", d["convergence_label"]),
+        ("Total communication (federated)", f"{d['total_kb']:.2f} KB"),
         ("Communication per round", f"{d['per_rnd']:.2f} KB/round"),
+    ])
+
+    doc.add_heading("Communication Cost Comparison", level=1)
+    _docx_kv_table(doc, [
+        ("Federated total (cumulative, actual)", _fmt_bytes(d["fed_total_bytes"])),
+        (f"Centralized total (one-time, {SENSORS_DEFAULT} sensors × {TRAIN_FRAC:.0%} train split)",
+         _fmt_bytes(d["cen_total_bytes"])),
+        ("Model payload per transfer", _fmt_bytes(d["model_bytes"])),
+        ("Reduction vs Centralized", f"{d['comm_reduction_pct']:.1f}%"),
     ])
 
     doc.add_heading("Round-wise Metrics", level=1)
@@ -701,11 +850,7 @@ def render_tabs():
         with tab4:
             st.markdown(ph("doc", "Experiment Summary Report"), unsafe_allow_html=True)
             if s.fed_mae:
-                fm, fr = s.fed_mae[-1], s.fed_rmse[-1]
-                total_kb = sum(s.comm_bytes) / 1024
-                per_rnd = total_kb / s.rounds_done
-                conv = next((i + 1 for i in range(1, len(s.fed_mae))
-                             if abs(s.fed_mae[i] - s.fed_mae[i - 1]) < 0.05), s.rounds_done)
+                d = _report_data()
                 obs = ("Non-IID distribution introduced client drift, widening the error gap vs centralized."
                        if s.mode == "Non-IID"
                        else "IID distribution — FedAvg converged close to the centralized baseline.")
@@ -713,14 +858,23 @@ def render_tabs():
 <tr><td>Dataset</td><td>{s.dataset}</td></tr><tr><td>Distribution</td><td>{s.mode}</td></tr>
 <tr><td>Clients</td><td>{s.num_clients}</td></tr><tr><td>Rounds</td><td>{s.rounds_done}</td></tr>
 <tr><td>Seed</td><td>{s.seed}</td></tr><tr><td>Speed</td><td>{s.speed}</td></tr>
-<tr><td>Final MAE</td><td style="color:#00FF88">{fm:.4f}</td></tr>
-<tr><td>Final RMSE</td><td style="color:#00FF88">{fr:.4f}</td></tr>
-<tr><td>Convergence</td><td style="color:#FFB547">Round {conv}</td></tr>
-<tr><td>Total comm.</td><td style="color:#FFB547">{total_kb:.2f} KB</td></tr>
-<tr><td>Per round</td><td>{per_rnd:.2f} KB/round</td></tr></table>
+<tr><td>Final MAE</td><td style="color:#00FF88">{d['final_mae']:.4f}</td></tr>
+<tr><td>Final RMSE</td><td style="color:#00FF88">{d['final_rmse']:.4f}</td></tr>
+<tr><td>Convergence</td><td style="color:#FFB547">{d['convergence_label']}</td></tr>
+<tr><td>Total comm. (federated)</td><td style="color:#FFB547">{d['total_kb']:.2f} KB</td></tr>
+<tr><td>Per round</td><td>{d['per_rnd']:.2f} KB/round</td></tr></table>
 <div class="note"><b style="color:#00D4FF">Observations</b><br>{obs}<br>
 Communication cost scales linearly with client count.<br>
-No raw data left local devices — privacy preserved ✓</div>'''), unsafe_allow_html=True)
+No raw data left local devices — privacy preserved ✓</div>
+<div class="note"><b style="color:#00D4FF">Communication Cost Comparison</b><br>
+Federated total (cumulative, {s.rounds_done} rounds, {s.num_clients} clients):
+<b style="color:#00D4FF">{_fmt_bytes(d["fed_total_bytes"])}</b><br>
+Centralized total (one-time raw upload, {SENSORS_DEFAULT} sensors × {TRAIN_FRAC:.0%} train split):
+<b style="color:#FFB547">{_fmt_bytes(d["cen_total_bytes"])}</b><br>
+Model payload per transfer (back-solved from real round data):
+{_fmt_bytes(d["model_bytes"])}<br>
+Reduction vs Centralized: <b style="color:#00FF88">{d["comm_reduction_pct"]:.1f}%</b></div>'''),
+                            unsafe_allow_html=True)
 
                 # ── Download buttons (only shown when valid results exist) ──
                 if not s.running:   # only generate reports once training has finished
