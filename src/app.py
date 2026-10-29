@@ -3,6 +3,7 @@ import re
 import time
 import sqlite3
 from pathlib import Path
+from intro_screen import render_intro, render_replay_button
 
 import numpy as np
 import plotly.graph_objects as go
@@ -255,6 +256,7 @@ def init_state():
         "logs": [], "client_status": [], "client_hist": [],
         "dataset": "METR-LA", "speed": "⚡ Normal",
         "render_tick": 0,
+        "intro_done": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -262,6 +264,9 @@ def init_state():
 
 
 init_state()
+if not st.session_state.intro_done:
+    render_intro()
+    st.stop()          # nothing below (dashboard) runs until the intro finishes
 
 
 # ─── EXPERIMENT LOGIC (unchanged) ────────────────────────────────────────────
@@ -394,7 +399,7 @@ st.markdown(H(f'''<div class="foot">
 <span>Supports IID &amp; Non-IID</span>
 <span>Chronological train/test split</span>
 <span>3 Seeds</span></div>'''), unsafe_allow_html=True)
-
+render_replay_button()
 
 def active_cfg():
     """Show the finished/running experiment's config, otherwise the live control selections."""
