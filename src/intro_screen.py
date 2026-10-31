@@ -332,7 +332,7 @@ html,body{height:100%;overflow:hidden;background:transparent;font-family:'Inter'
   </div>
 
   <div class="tr" id="phase">PHASE 0: READY</div>
-  <div class="bar"><span><i></i>V2X FREQ: 5.9 GHz (DSRC)</span><span id="stat">AWAITING PROBE HANDSHAKE</span><span>CARRIER: AIORI-MESH-DOWNTOWN</span></div>
+  <div class="bar"><span><i></i>V2X FREQ: 5.9 GHz (DSRC)</span><span id="stat">AWAITING PROBE HANDSHAKE</span><span>WELCOME TO OUR PROJECT </span></div>
   <div class="flash" id="flash"></div>
  </div>
  <div class="fb" id="fb">Intro complete &mdash; press &ldquo;Skip intro&rdquo; below to open the dashboard.</div>
